@@ -6,9 +6,11 @@ This project focuses on reliable spreadsheet operations against an already-open 
 
 ## Demo
 
-Short usage demo: [assets/demo.mp4](assets/demo.mp4)
+![Live GPU purchase dashboard built through MCP/UNO](assets/demo.gif)
 
-The demo walks through a typical MCP flow: opening a workbook, adding a sheet, writing a range, creating Ctrl-click hyperlinks, applying the `pc_nostalgia` template, auto-fitting, and saving.
+The demo shows the `create_gpu_purchase_dashboard_live` tool rebuilding the dashboard from scratch through UNO: creating the sheet, styling and filling each section live, and adding native Calc charts, so every change is visible in LibreOffice.
+
+A higher-quality version is available at [assets/demo.mp4](assets/demo.mp4).
 
 ## Available Tools
 
