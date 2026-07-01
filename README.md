@@ -4,15 +4,6 @@ MCP server for controlling LibreOffice Calc workbooks through UNO.
 
 This project focuses on reliable spreadsheet operations against an already-open workbook, or a workbook opened explicitly by the server. It avoids silent file rewrites outside LibreOffice and provides practical tools for writing cells, ranges, hyperlinks, and reusable visual templates.
 
-## Agent Workflow Contract
-
-Agents should use this server in this order:
-
-1. Use **UNO-backed MCP tools first** for live workbooks and visible demos.
-2. Use file-level libraries such as `openpyxl` only as an explicit fallback when UNO cannot provide the required operation.
-3. If a spreadsheet operation is missing, add it as a new MCP tool instead of silently bypassing the server.
-4. For live demos, create, edit, style, navigate, and save through UNO so changes are visible in LibreOffice.
-
 ## Demo
 
 Short usage demo: [assets/demo.mp4](assets/demo.mp4)
