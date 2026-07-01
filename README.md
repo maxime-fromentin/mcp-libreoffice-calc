@@ -40,36 +40,6 @@ The demo walks through a typical MCP flow: opening a workbook, adding a sheet, w
 - `auto_fit_sheets`: adjust column widths, row heights, and wrapping.
 - `save_document`: save the workbook.
 
-## Calc Templates
-
-### `pc_nostalgia`
-
-An opinionated terminal-inspired template for tracking sheets:
-
-- black visible background;
-- green terminal text in Consolas;
-- blue title/header rows;
-- hidden gridlines;
-- cleared cell borders by default, so there are no stray vertical lines.
-
-Example:
-
-```text
-apply_calc_template(
-  sheet="vendor_purchases",
-  template="pc_nostalgia",
-  used_range="A1:N45",
-  title_rows=1,
-  header_rows=[7]
-)
-```
-
-Convert URL text into Ctrl-click hyperlinks:
-
-```text
-link_url_range(sheet="vendor_purchases", cell_range="K8:K20")
-```
-
 Build the live GPU purchase dashboard, including charts:
 
 ```text
