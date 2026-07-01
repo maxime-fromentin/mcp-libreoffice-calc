@@ -1,44 +1,50 @@
 # MCP LibreOffice Calc
 
-Serveur MCP pour piloter LibreOffice Calc en direct avec UNO.
+MCP server for controlling LibreOffice Calc workbooks through UNO.
 
-Ce projet est une base de travail separee de `mcp-libre`. L'objectif est simple : avoir des outils fiables pour manipuler un classeur ouvert ou ouvert par le serveur MCP, sans devoir modifier le fichier `.xlsx` hors de LibreOffice.
+This project focuses on reliable spreadsheet operations against an already-open workbook, or a workbook opened explicitly by the server. It avoids silent file rewrites outside LibreOffice and provides practical tools for writing cells, ranges, hyperlinks, and reusable visual templates.
 
-## Outils disponibles
+## Demo
 
-- `libreoffice_status` : verifier la connexion UNO et les classeurs accessibles.
-- `open_calc` : ouvrir un fichier Calc/Excel via LibreOffice.
-- `ensure_calc_document` : utiliser le classeur deja ouvert, ou l'ouvrir explicitement s'il manque.
-- `list_calc_documents` : lister les classeurs Calc ouverts via UNO.
-- `list_sheets` : lister les feuilles.
-- `add_sheet` : ajouter une feuille.
-- `remove_sheet` : supprimer une feuille.
-- `read_cell` : lire une cellule.
-- `write_cell` : ecrire une cellule en direct.
-- `write_range` : ecrire un tableau 2D.
-- `set_hyperlink` : ajouter un lien Ctrl+clic dans une cellule Calc.
-- `link_url_range` : transformer les URLs texte d'une plage en liens Ctrl+clic.
-- `apply_calc_template` : appliquer un template visuel, dont `pc_nostalgia`.
-- `auto_fit_sheets` : ajuster largeur, hauteur et retour a la ligne.
-- `save_document` : sauvegarder le classeur.
+Short usage demo: [assets/demo.mp4](assets/demo.mp4)
 
-## Templates Calc
+The demo walks through a typical MCP flow: opening a workbook, adding a sheet, writing a range, creating Ctrl-click hyperlinks, applying the `pc_nostalgia` template, auto-fitting, and saving.
+
+## Available Tools
+
+- `libreoffice_status`: check the UNO connection and list reachable Calc workbooks.
+- `open_calc`: open a Calc or Excel workbook through LibreOffice.
+- `ensure_calc_document`: reuse an already-open workbook, or open it explicitly if missing.
+- `list_calc_documents`: list Calc workbooks reachable through UNO.
+- `list_sheets`: list workbook sheets.
+- `add_sheet`: add a sheet if it does not already exist.
+- `remove_sheet`: remove a sheet, while refusing to delete the last sheet.
+- `read_cell`: read a cell value and formula.
+- `write_cell`: write one cell directly.
+- `write_range`: write a 2D table from a starting cell.
+- `set_hyperlink`: add a Ctrl-click hyperlink to a Calc cell.
+- `link_url_range`: convert plain-text URLs in a range into Ctrl-click hyperlinks.
+- `apply_calc_template`: apply a visual template, including `pc_nostalgia`.
+- `auto_fit_sheets`: adjust column widths, row heights, and wrapping.
+- `save_document`: save the workbook.
+
+## Calc Templates
 
 ### `pc_nostalgia`
 
-Template recommande pour les feuilles de suivi du datacenter :
+An opinionated terminal-inspired template for tracking sheets:
 
-- fond noir sur la zone visible ;
-- texte vert terminal en police Consolas ;
-- titres/en-tetes bleus ;
-- quadrillage masque ;
-- bordures nettoyees par defaut, donc pas de lignes verticales parasites.
+- black visible background;
+- green terminal text in Consolas;
+- blue title/header rows;
+- hidden gridlines;
+- cleared cell borders by default, so there are no stray vertical lines.
 
-Exemple :
+Example:
 
 ```text
 apply_calc_template(
-  sheet="achat_Vendeur_spe",
+  sheet="vendor_purchases",
   template="pc_nostalgia",
   used_range="A1:N45",
   title_rows=1,
@@ -46,24 +52,24 @@ apply_calc_template(
 )
 ```
 
-Pour rendre les URLs cliquables avec Ctrl+clic :
+Convert URL text into Ctrl-click hyperlinks:
 
 ```text
-link_url_range(sheet="achat_Vendeur_spe", cell_range="K8:K20")
+link_url_range(sheet="vendor_purchases", cell_range="K8:K20")
 ```
 
-## Lancement manuel
+## Manual Start
 
 ```bash
 cd /home/maxime/.local/share/mcp-libreoffice-calc
 uv run python src/main.py
 ```
 
-Le serveur demarre ou rejoint un listener LibreOffice UNO sur `127.0.0.1:2002`.
+The server starts or joins a LibreOffice UNO listener on `127.0.0.1:2002`.
 
-## Configuration Code
+## Code Configuration
 
-Exemple pour `~/.code/config.toml` :
+Example `~/.code/config.toml` entry:
 
 ```toml
 [mcp_servers.libreoffice_calc]
@@ -77,6 +83,8 @@ PYTHONPATH = "/home/maxime/.local/share/mcp-libreoffice-calc/src:/usr/lib/python
 
 ## Notes
 
-Pour piloter un classeur deja ouvert, LibreOffice doit etre accessible par UNO. Le chemin recommande est `ensure_calc_document` une seule fois, puis `add_sheet`, `write_cell` ou `write_range`. Les outils de lecture/ecriture ne rouvrent plus un fichier absent par surprise.
+LibreOffice must be reachable through UNO to control an already-open workbook. The recommended flow is to call `ensure_calc_document` once, then use `add_sheet`, `write_cell`, `write_range`, `set_hyperlink`, or `link_url_range`.
 
-Les fichiers copies depuis le projet d'origine restent couverts par leur licence. Le serveur principal dans `src/` a ete reecrit pour cette base personnelle.
+MCP servers load tool definitions at process startup. Restart or reload your MCP client after changing server code or configuration.
+
+Files copied from the original base project remain covered by their original license. The main server in `src/` has been rewritten for this focused Calc workflow.

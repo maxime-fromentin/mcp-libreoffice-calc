@@ -1,4 +1,4 @@
-"""MCP Libre Perso: outils MCP pour piloter LibreOffice Calc en direct."""
+"""MCP tools for controlling LibreOffice Calc through UNO."""
 
 from __future__ import annotations
 
@@ -22,14 +22,19 @@ if UNO_SITE_PACKAGES.exists() and str(UNO_SITE_PACKAGES) not in sys.path:
     sys.path.append(str(UNO_SITE_PACKAGES))
 
 
-mcp = FastMCP("MCP Libre Perso")
+mcp = FastMCP("MCP LibreOffice Calc")
+
+
+def _log_startup(message: str) -> None:
+    """Write startup diagnostics to stderr so MCP JSON-RPC stdout stays clean."""
+    print(f"[mcp-libreoffice-calc] {message}", file=sys.stderr, flush=True)
 
 
 class CellValue(BaseModel):
     document: str
     sheet: str
     cell: str
-    value: Any = Field(description="Valeur brute renvoyee par LibreOffice")
+    value: Any = Field(description="Raw value returned by LibreOffice")
     formula: str | None = None
 
 
@@ -66,10 +71,10 @@ def _import_uno():
     try:
         import uno  # type: ignore
         from com.sun.star.beans import PropertyValue  # type: ignore
-    except Exception as exc:  # pragma: no cover - depend de la machine
+    except Exception as exc:  # pragma: no cover - machine dependent
         raise RuntimeError(
-            "Impossible de charger UNO. Verifie libreoffice-fresh/libreoffice-still et "
-            f"le chemin {UNO_SITE_PACKAGES}. Erreur: {exc}"
+            "Unable to load UNO. Check your LibreOffice installation and "
+            f"the path {UNO_SITE_PACKAGES}. Error: {exc}"
         ) from exc
     return uno, PropertyValue
 
@@ -84,6 +89,7 @@ def _property(name: str, value: Any):
 
 def _start_listener() -> None:
     accept = f"socket,host={HOST},port={PORT};urp;StarOffice.ComponentContext"
+    _log_startup(f"starting LibreOffice UNO listener on {HOST}:{PORT}")
     subprocess.Popen(
         [
             SOFFICE,
@@ -111,12 +117,12 @@ def _desktop(start_if_needed: bool = True):
         try:
             ctx = resolver.resolve(url)
             return ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
-        except Exception as exc:  # pragma: no cover - depend de LibreOffice
+        except Exception as exc:  # pragma: no cover - LibreOffice dependent
             last_error = exc
             if attempt == 0 and start_if_needed:
                 _start_listener()
             time.sleep(0.5)
-    raise RuntimeError(f"Connexion UNO impossible sur {HOST}:{PORT}: {last_error}")
+    raise RuntimeError(f"Unable to connect to UNO on {HOST}:{PORT}: {last_error}")
 
 
 def _file_url(path: str) -> str:
@@ -161,13 +167,13 @@ def _document(path: str | None = None, open_if_missing: bool = False):
         opened = _open_calc_document(path)
         if opened is not None:
             return opened
-        raise RuntimeError(f"LibreOffice n'a pas pu ouvrir: {path}")
+        raise RuntimeError(f"LibreOffice could not open: {path}")
     if path:
         raise RuntimeError(
-            "Classeur non trouve dans les documents Calc ouverts. "
-            "Utilise ensure_calc_document(path) si tu veux l'ouvrir automatiquement."
+            "Workbook not found in the open Calc documents. "
+            "Use ensure_calc_document(path) if you want to open it automatically."
         )
-    raise RuntimeError("Aucun classeur Calc ouvert via le listener UNO.")
+    raise RuntimeError("No Calc workbook is open through the UNO listener.")
 
 
 def _open_calc_document(path: str, hidden: bool = False):
@@ -182,14 +188,14 @@ def _open_calc_document(path: str, hidden: bool = False):
 def _sheet(doc: Any, name: str):
     sheets = doc.Sheets
     if not sheets.hasByName(name):
-        raise ValueError(f"Feuille introuvable: {name}")
+        raise ValueError(f"Sheet not found: {name}")
     return sheets.getByName(name)
 
 
 def _cell_indexes(cell: str) -> tuple[int, int]:
     match = re.fullmatch(r"([A-Za-z]+)([1-9][0-9]*)", cell.strip())
     if not match:
-        raise ValueError(f"Reference cellule invalide: {cell}")
+        raise ValueError(f"Invalid cell reference: {cell}")
     letters, row_text = match.groups()
     col = 0
     for char in letters.upper():
@@ -212,7 +218,7 @@ def _range_indexes(range_name: str) -> tuple[int, int, int, int]:
         col, row = _cell_indexes(parts[0])
         return col, row, col, row
     if len(parts) != 2:
-        raise ValueError(f"Reference plage invalide: {range_name}")
+        raise ValueError(f"Invalid range reference: {range_name}")
     start_col, start_row = _cell_indexes(parts[0])
     end_col, end_row = _cell_indexes(parts[1])
     return min(start_col, end_col), min(start_row, end_row), max(start_col, end_col), max(start_row, end_row)
@@ -241,7 +247,7 @@ def _clear_cell_borders(cell_obj: Any) -> None:
         cell_obj.LeftBorder = empty
         cell_obj.RightBorder = empty
     except Exception:
-        # Les bordures sont purement visuelles; ne pas bloquer l'outil si UNO varie selon version.
+        # Borders are visual only; do not fail the tool if UNO varies by version.
         return
 
 
@@ -270,7 +276,7 @@ def _read_cell_value(cell_obj: Any) -> Any:
 
 @mcp.tool()
 def libreoffice_status() -> dict[str, Any]:
-    """Verifier la connexion UNO et lister les classeurs Calc ouverts."""
+    """Check the UNO connection and list open Calc workbooks."""
     docs = _documents()
     return {
         "uno_host": HOST,
@@ -284,22 +290,22 @@ def libreoffice_status() -> dict[str, Any]:
 
 @mcp.tool()
 def open_calc(path: str, hidden: bool = False) -> dict[str, Any]:
-    """Ouvrir un classeur Calc dans LibreOffice via UNO."""
+    """Open a Calc workbook in LibreOffice through UNO."""
     doc = _open_calc_document(path, hidden=hidden)
     if doc is None:
-        raise RuntimeError(f"LibreOffice n'a pas pu ouvrir: {path}")
+        raise RuntimeError(f"LibreOffice could not open: {path}")
     return {"title": getattr(doc, "Title", ""), "path": _path_from_url(getattr(doc, "URL", ""))}
 
 
 @mcp.tool()
 def ensure_calc_document(path: str, hidden: bool = False) -> DocumentHandle:
-    """Retourner le classeur s'il est deja ouvert; sinon l'ouvrir explicitement."""
+    """Return the workbook if already open; otherwise open it explicitly."""
     doc = _find_document(path)
     already_open = doc is not None
     if doc is None:
         doc = _open_calc_document(path, hidden=hidden)
     if doc is None:
-        raise RuntimeError(f"LibreOffice n'a pas pu ouvrir: {path}")
+        raise RuntimeError(f"LibreOffice could not open: {path}")
     return DocumentHandle(
         title=getattr(doc, "Title", ""),
         path=_path_from_url(getattr(doc, "URL", "")),
@@ -309,7 +315,7 @@ def ensure_calc_document(path: str, hidden: bool = False) -> DocumentHandle:
 
 @mcp.tool()
 def list_calc_documents() -> list[dict[str, str]]:
-    """Lister les classeurs Calc accessibles par le listener UNO."""
+    """List Calc workbooks reachable through the UNO listener."""
     return [
         {"title": getattr(doc, "Title", ""), "path": _path_from_url(getattr(doc, "URL", ""))}
         for doc in _documents()
@@ -318,14 +324,14 @@ def list_calc_documents() -> list[dict[str, str]]:
 
 @mcp.tool()
 def list_sheets(path: str | None = None) -> list[str]:
-    """Lister les feuilles d'un classeur ouvert ou du classeur indique."""
+    """List sheets from an open or specified workbook."""
     doc = _document(path)
     return [doc.Sheets.getElementNames()[i] for i in range(len(doc.Sheets.getElementNames()))]
 
 
 @mcp.tool()
 def add_sheet(name: str, path: str | None = None, position: int | None = None) -> list[str]:
-    """Ajouter une feuille Calc si elle n'existe pas encore."""
+    """Add a Calc sheet if it does not already exist."""
     doc = _document(path)
     sheets = doc.Sheets
     if not sheets.hasByName(name):
@@ -336,14 +342,14 @@ def add_sheet(name: str, path: str | None = None, position: int | None = None) -
 
 @mcp.tool()
 def remove_sheet(name: str, path: str | None = None, save: bool = True) -> list[str]:
-    """Supprimer une feuille Calc. Refuse de supprimer la derniere feuille."""
+    """Remove a Calc sheet. Refuses to remove the last sheet."""
     doc = _document(path)
     sheets = doc.Sheets
     names = list(sheets.getElementNames())
     if name not in names:
         return names
     if len(names) <= 1:
-        raise ValueError("Impossible de supprimer la derniere feuille du classeur")
+        raise ValueError("Cannot remove the last sheet from the workbook")
     sheets.removeByName(name)
     if save:
         doc.store()
@@ -352,7 +358,7 @@ def remove_sheet(name: str, path: str | None = None, save: bool = True) -> list[
 
 @mcp.tool()
 def read_cell(sheet: str, cell: str, path: str | None = None) -> CellValue:
-    """Lire une cellule Calc."""
+    """Read a Calc cell."""
     doc = _document(path)
     col, row = _cell_indexes(cell)
     cell_obj = _sheet(doc, sheet).getCellByPosition(col, row)
@@ -368,7 +374,7 @@ def read_cell(sheet: str, cell: str, path: str | None = None) -> CellValue:
 
 @mcp.tool()
 def write_cell(sheet: str, cell: str, value: Any, path: str | None = None, save: bool = True) -> CellValue:
-    """Ecrire une cellule Calc en direct. Les chaines commencant par '=' deviennent des formules."""
+    """Write one Calc cell directly. Strings starting with '=' become formulas."""
     doc = _document(path)
     col, row = _cell_indexes(cell)
     cell_obj = _sheet(doc, sheet).getCellByPosition(col, row)
@@ -380,12 +386,12 @@ def write_cell(sheet: str, cell: str, value: Any, path: str | None = None, save:
 
 @mcp.tool()
 def write_range(sheet: str, start_cell: str, values: list[list[Any]], path: str | None = None, save: bool = True) -> RangeWriteResult:
-    """Ecrire un tableau 2D dans Calc a partir d'une cellule de depart."""
+    """Write a 2D table in Calc from a starting cell."""
     if not values:
-        raise ValueError("values ne peut pas etre vide")
+        raise ValueError("values cannot be empty")
     width = max(len(row) for row in values)
     if width == 0:
-        raise ValueError("values doit contenir au moins une colonne")
+        raise ValueError("values must contain at least one column")
 
     doc = _document(path)
     start_col, start_row = _cell_indexes(start_cell)
@@ -413,13 +419,13 @@ def set_hyperlink(
     path: str | None = None,
     save: bool = True,
 ) -> HyperlinkResult:
-    """Ajouter un lien cliquable Ctrl+clic dans une cellule Calc.
+    """Add a Ctrl-click hyperlink to a Calc cell.
 
-    Le lien est ecrit avec la formule LibreOffice HYPERLINK pour rester compatible
-    avec les fichiers `.xlsx`. Si `label` est omis, l'URL sert de texte visible.
+    The link is written with LibreOffice's HYPERLINK formula to stay compatible
+    with `.xlsx` files. If `label` is omitted, the URL is used as visible text.
     """
     if not url.startswith(("http://", "https://", "mailto:")):
-        raise ValueError("url doit commencer par http://, https:// ou mailto:")
+        raise ValueError("url must start with http://, https://, or mailto:")
     doc = _document(path)
     col, row = _cell_indexes(cell)
     target = _sheet(doc, sheet).getCellByPosition(col, row)
@@ -446,9 +452,9 @@ def link_url_range(
     path: str | None = None,
     save: bool = True,
 ) -> dict[str, Any]:
-    """Transformer les URLs texte d'une plage en liens Ctrl+clic.
+    """Convert plain-text URLs in a range into Ctrl-click hyperlinks.
 
-    Exemple: `link_url_range(sheet="achat_Vendeur_spe", cell_range="K8:K20")`.
+    Example: `link_url_range(sheet="vendor_purchases", cell_range="K8:K20")`.
     """
     doc = _document(path)
     target_sheet = _sheet(doc, sheet)
@@ -482,15 +488,15 @@ def apply_calc_template(
     clear_borders: bool = True,
     save: bool = True,
 ) -> TemplateResult:
-    """Appliquer un template visuel Calc.
+    """Apply a visual Calc template.
 
-    Template disponible: `pc_nostalgia`.
-    Style: fond noir, texte vert terminal, titres/en-tetes bleus, police Consolas,
-    quadrillage masque, sans bordures verticales. `header_rows` utilise des numeros
-    de lignes Calc en base 1, par exemple `[7]`.
+    Available template: `pc_nostalgia`.
+    Style: black background, green terminal text, blue title/header rows,
+    Consolas font, hidden gridlines, and no vertical borders. `header_rows`
+    uses 1-based Calc row numbers, for example `[7]`.
     """
     if template != "pc_nostalgia":
-        raise ValueError("template supporte actuellement: pc_nostalgia")
+        raise ValueError("currently supported template: pc_nostalgia")
     doc = _document(path)
     target_sheet = _sheet(doc, sheet)
     if used_range:
@@ -535,9 +541,9 @@ def auto_fit_sheets(
     min_column_width: int = 3500,
     max_column_width: int = 16000,
 ) -> dict[str, Any]:
-    """Ajuster les feuilles Calc sans laisser LibreOffice creer des colonnes trop etroites.
+    """Adjust Calc sheets without letting LibreOffice create overly narrow columns.
 
-    Les largeurs sont en centiemes de millimetre, unite UNO de LibreOffice.
+    Widths are in hundredths of a millimeter, LibreOffice's UNO unit.
     """
     doc = _document(path)
     names = list(doc.Sheets.getElementNames()) if sheets is None else sheets
@@ -574,13 +580,28 @@ def auto_fit_sheets(
 
 @mcp.tool()
 def save_document(path: str | None = None) -> dict[str, str]:
-    """Sauvegarder le classeur Calc."""
+    """Save the Calc workbook."""
     doc = _document(path)
     doc.store()
     return {"saved": _path_from_url(getattr(doc, "URL", ""))}
 
 
 def main() -> None:
+    _log_startup("starting MCP server")
+    _log_startup(f"python={sys.version.split()[0]} executable={sys.executable}")
+    _log_startup(f"cwd={Path.cwd()}")
+    _log_startup(f"uno_site_packages={UNO_SITE_PACKAGES} exists={UNO_SITE_PACKAGES.exists()}")
+    _log_startup(f"soffice={SOFFICE} exists={Path(SOFFICE).exists()}")
+    _log_startup(f"uno_endpoint={HOST}:{PORT}")
+    try:
+        docs = _documents()
+        _log_startup(f"UNO connection OK; open_calc_documents={len(docs)}")
+        for doc in docs:
+            title = getattr(doc, "Title", "")
+            path = _path_from_url(getattr(doc, "URL", ""))
+            _log_startup(f"document title={title!r} path={path!r}")
+    except Exception as exc:
+        _log_startup(f"UNO connection not ready yet: {exc}")
     mcp.run()
 
 

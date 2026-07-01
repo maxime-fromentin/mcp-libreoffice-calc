@@ -1,38 +1,21 @@
-# Renommer et publier le MCP
+# Publishing Guide
 
-Nom recommande pour GitHub : `mcp-libreoffice-calc`.
+Recommended public repository name: `mcp-libreoffice-calc`.
 
-Pourquoi ce nom : il est clair, public, descriptif, et il evite `perso` qui fait projet prive. Il dit directement que le MCP pilote LibreOffice Calc.
+The name is explicit, searchable, and avoids personal/internal wording. It clearly says that this MCP server controls LibreOffice Calc.
 
-## Renommage local
+## Local Repository
 
-Depuis `/home/maxime/.local/share` :
+From the project directory:
 
 ```bash
-mv mcp-libre-perso mcp-libreoffice-calc
-cd mcp-libreoffice-calc
+cd /home/maxime/.local/share/mcp-libreoffice-calc
+git status --short --branch
 ```
 
-Modifier ensuite `pyproject.toml` :
+## Code Configuration
 
-```toml
-[project]
-name = "mcp-libreoffice-calc"
-description = "MCP server for controlling LibreOffice Calc via UNO"
-
-[project.scripts]
-mcp-libreoffice-calc = "libremcp:main"
-```
-
-Modifier le titre du `README.md` :
-
-```markdown
-# MCP LibreOffice Calc
-```
-
-## Configuration Code
-
-Dans `~/.code/config.toml`, remplacer l'ancien bloc par :
+Use this block in `~/.code/config.toml`:
 
 ```toml
 [mcp_servers.libreoffice_calc]
@@ -44,9 +27,9 @@ cwd = "/home/maxime/.local/share/mcp-libreoffice-calc"
 PYTHONPATH = "/home/maxime/.local/share/mcp-libreoffice-calc:/home/maxime/.local/share/mcp-libreoffice-calc/src:/usr/lib/python3.14/site-packages"
 ```
 
-Puis redemarrer/reload le client MCP. Les outils MCP sont charges au demarrage du process, donc un serveur deja lance ne voit pas les nouveaux noms ou nouveaux tools.
+Restart or reload the MCP client after changing server code or configuration. A running MCP process does not hot-reload newly added tools.
 
-## Initialiser GitHub
+## GitHub Setup
 
 ```bash
 cd /home/maxime/.local/share/mcp-libreoffice-calc
@@ -56,16 +39,16 @@ git commit -m "Initial LibreOffice Calc MCP server"
 gh repo create mcp-libreoffice-calc --public --source=. --remote=origin --push
 ```
 
-## Nettoyage avant publication
+## Cleanup Before Publishing
 
-Avant de push :
+Before pushing, remove local caches and virtual environments:
 
 ```bash
 find . -type d -name '__pycache__' -prune -exec rm -rf {} +
 find . -type d -name '.venv' -prune -exec rm -rf {} +
 ```
 
-Verifier que `.gitignore` exclut au minimum :
+Make sure `.gitignore` excludes at least:
 
 ```gitignore
 .venv/
@@ -74,19 +57,19 @@ __pycache__/
 .env
 ```
 
-## Outils publics importants
+## Public Tools
 
-- `open_calc` : ouvrir un classeur Calc/Excel.
-- `ensure_calc_document` : reutiliser un classeur ouvert ou l'ouvrir.
-- `list_sheets` : lister les feuilles.
-- `add_sheet` / `remove_sheet` : gerer les feuilles.
-- `read_cell` / `write_cell` / `write_range` : lire/ecrire des cellules.
-- `set_hyperlink` : ajouter un lien Ctrl+clic.
-- `link_url_range` : transformer une plage d'URLs en liens Ctrl+clic.
-- `apply_calc_template` : appliquer le template `pc_nostalgia`.
-- `auto_fit_sheets` : ajuster largeur/hauteur.
-- `save_document` : sauvegarder.
+- `open_calc`: open a Calc or Excel workbook.
+- `ensure_calc_document`: reuse an open workbook or open it explicitly.
+- `list_sheets`: list workbook sheets.
+- `add_sheet` / `remove_sheet`: manage sheets.
+- `read_cell` / `write_cell` / `write_range`: read and write cells.
+- `set_hyperlink`: add a Ctrl-click hyperlink.
+- `link_url_range`: convert URL text in a range into Ctrl-click hyperlinks.
+- `apply_calc_template`: apply the `pc_nostalgia` template.
+- `auto_fit_sheets`: adjust column widths and row heights.
+- `save_document`: save the workbook.
 
-## Note importante
+## Template Note
 
-`pc_nostalgia` est un template visuel opinionated. Pour un projet public, le garder comme exemple/demo est bien, mais les outils doivent rester generiques afin que les utilisateurs puissent appliquer leurs propres styles.
+`pc_nostalgia` is intentionally opinionated. It is useful as a demo and a personal workflow template, while the core server tools remain generic enough for users to create their own styles.
