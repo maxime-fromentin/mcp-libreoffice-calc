@@ -4,6 +4,15 @@ MCP server for controlling LibreOffice Calc workbooks through UNO.
 
 This project focuses on reliable spreadsheet operations against an already-open workbook, or a workbook opened explicitly by the server. It avoids silent file rewrites outside LibreOffice and provides practical tools for writing cells, ranges, hyperlinks, and reusable visual templates.
 
+## Agent Workflow Contract
+
+Agents should use this server in this order:
+
+1. Use **UNO-backed MCP tools first** for live workbooks and visible demos.
+2. Use file-level libraries such as `openpyxl` only as an explicit fallback when UNO cannot provide the required operation.
+3. If a spreadsheet operation is missing, add it as a new MCP tool instead of silently bypassing the server.
+4. For live demos, create, edit, style, navigate, and save through UNO so changes are visible in LibreOffice.
+
 ## Demo
 
 Short usage demo: [assets/demo.mp4](assets/demo.mp4)
@@ -19,12 +28,15 @@ The demo walks through a typical MCP flow: opening a workbook, adding a sheet, w
 - `list_sheets`: list workbook sheets.
 - `add_sheet`: add a sheet if it does not already exist.
 - `remove_sheet`: remove a sheet, while refusing to delete the last sheet.
+- `activate_sheet`: activate a sheet and select a cell for live visual workflows.
 - `read_cell`: read a cell value and formula.
 - `write_cell`: write one cell directly.
 - `write_range`: write a 2D table from a starting cell.
 - `set_hyperlink`: add a Ctrl-click hyperlink to a Calc cell.
+- `set_internal_hyperlink`: add a Ctrl-click hyperlink to another sheet/cell.
 - `link_url_range`: convert plain-text URLs in a range into Ctrl-click hyperlinks.
 - `apply_calc_template`: apply a visual template, including `pc_nostalgia`.
+- `create_gpu_purchase_dashboard_live`: build the GPU purchase dashboard through UNO for live demos, including native Calc charts.
 - `auto_fit_sheets`: adjust column widths, row heights, and wrapping.
 - `save_document`: save the workbook.
 
@@ -56,6 +68,17 @@ Convert URL text into Ctrl-click hyperlinks:
 
 ```text
 link_url_range(sheet="vendor_purchases", cell_range="K8:K20")
+```
+
+Build the live GPU purchase dashboard, including charts:
+
+```text
+create_gpu_purchase_dashboard_live(
+  path="/path/to/workbook.xlsx",
+  dashboard_sheet="Dashboard_live",
+  recreate=true,
+  pause_seconds=0.25
+)
 ```
 
 ## Manual Start
