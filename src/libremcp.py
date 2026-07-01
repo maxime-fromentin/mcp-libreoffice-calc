@@ -1002,15 +1002,7 @@ def main() -> None:
     _log_startup(f"uno_site_packages={UNO_SITE_PACKAGES} exists={UNO_SITE_PACKAGES.exists()}")
     _log_startup(f"soffice={SOFFICE} exists={Path(SOFFICE).exists()}")
     _log_startup(f"uno_endpoint={HOST}:{PORT}")
-    try:
-        docs = _documents()
-        _log_startup(f"UNO connection OK; open_calc_documents={len(docs)}")
-        for doc in docs:
-            title = getattr(doc, "Title", "")
-            path = _path_from_url(getattr(doc, "URL", ""))
-            _log_startup(f"document title={title!r} path={path!r}")
-    except Exception as exc:
-        _log_startup(f"UNO connection not ready yet: {exc}")
+    _log_startup("UNO probing is deferred to libreoffice_status to keep MCP handshake fast")
     mcp.run()
 
 
