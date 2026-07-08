@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import glob
+import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -13,10 +17,20 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 
-UNO_SITE_PACKAGES = Path("/usr/lib/python3.14/site-packages")
-SOFFICE = "/usr/lib/libreoffice/program/soffice"
-HOST = "127.0.0.1"
-PORT = 2002
+_uno_env = os.environ.get("LIBREMCP_UNO_SITE_PACKAGES")
+if _uno_env:
+    UNO_SITE_PACKAGES = Path(_uno_env)
+else:
+    _candidates = glob.glob("/usr/lib/python3.*/site-packages")
+    UNO_SITE_PACKAGES = Path(
+        next(
+            (p for p in _candidates if (Path(p) / "uno.py").exists()),
+            "/usr/lib/python3.14/site-packages",
+        )
+    )
+SOFFICE = os.environ.get("LIBREMCP_SOFFICE") or shutil.which("soffice") or "/usr/lib/libreoffice/program/soffice"
+HOST = os.environ.get("LIBREMCP_UNO_HOST", "127.0.0.1")
+PORT = int(os.environ.get("LIBREMCP_UNO_PORT", "2002"))
 
 if UNO_SITE_PACKAGES.exists() and str(UNO_SITE_PACKAGES) not in sys.path:
     sys.path.append(str(UNO_SITE_PACKAGES))
@@ -110,21 +124,31 @@ def _property(name: str, value: Any):
     return prop
 
 
+_listener_lock = threading.Lock()
+_listener_started = False
+_listener_process: subprocess.Popen | None = None
+
+
 def _start_listener() -> None:
-    accept = f"socket,host={HOST},port={PORT};urp;StarOffice.ComponentContext"
-    _log_startup(f"starting LibreOffice UNO listener on {HOST}:{PORT}")
-    subprocess.Popen(
-        [
-            SOFFICE,
-            "--accept=" + accept,
-            "--norestore",
-            "--nodefault",
-            "--nologo",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    global _listener_started, _listener_process
+    with _listener_lock:
+        if _listener_started:
+            return
+        accept = f"socket,host={HOST},port={PORT};urp;StarOffice.ComponentContext"
+        _log_startup(f"starting LibreOffice UNO listener on {HOST}:{PORT}")
+        _listener_process = subprocess.Popen(
+            [
+                SOFFICE,
+                "--accept=" + accept,
+                "--norestore",
+                "--nodefault",
+                "--nologo",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _listener_started = True
 
 
 def _desktop(start_if_needed: bool = True):
@@ -167,7 +191,8 @@ def _documents() -> list[Any]:
     docs: list[Any] = []
     while enum.hasMoreElements():
         doc = enum.nextElement()
-        if hasattr(doc, "Sheets"):
+        is_calc = doc.supportsService("com.sun.star.sheet.SpreadsheetDocument") if hasattr(doc, "supportsService") else hasattr(doc, "Sheets")
+        if is_calc:
             docs.append(doc)
     return docs
 
@@ -223,7 +248,12 @@ def _cell_indexes(cell: str) -> tuple[int, int]:
     col = 0
     for char in letters.upper():
         col = col * 26 + ord(char) - ord("A") + 1
-    return col - 1, int(row_text) - 1
+    if col > 16384:
+        raise ValueError(f"Invalid cell reference: {cell} (column exceeds 16384)")
+    row = int(row_text)
+    if row > 1048576:
+        raise ValueError(f"Invalid cell reference: {cell} (row exceeds 1048576)")
+    return col - 1, row - 1
 
 
 def _cell_name(col: int, row: int) -> str:
@@ -251,6 +281,14 @@ def _escape_formula_text(value: str) -> str:
     return value.replace('"', '""')
 
 
+def _sheet_ref(sheet_name: str, cell: str = "A1") -> str:
+    """Build a '#Sheet.Cell' internal reference, quoting the sheet name when needed."""
+    if re.fullmatch(r"[A-Za-z0-9_]+", sheet_name):
+        return f"#{sheet_name}.{cell}"
+    escaped = sheet_name.replace("'", "''")
+    return f"#'{escaped}'.{cell}"
+
+
 def _set_pc_nostalgia_cell(cell_obj: Any, *, header: bool = False, title: bool = False) -> None:
     cell_obj.CellBackColor = 0x1F4E78 if header or title else 0x000000
     cell_obj.CharColor = 0xFFFFFF if header or title else 0x00AE00
@@ -276,6 +314,8 @@ def _write_cell(sheet_obj: Any, addr: str, value: Any):
 
 
 def _write_row(sheet_obj: Any, row_number: int, values: list[Any], start_col: int = 0) -> None:
+    if row_number < 1:
+        raise ValueError("row_number must be >= 1")
     for offset, value in enumerate(values):
         _set_cell_value(sheet_obj.getCellByPosition(start_col + offset, row_number - 1), value)
 
@@ -457,8 +497,7 @@ def list_calc_documents() -> list[dict[str, str]]:
 @mcp.tool()
 def list_sheets(path: str | None = None) -> list[str]:
     """List sheets from an open or specified workbook."""
-    doc = _document(path)
-    return [doc.Sheets.getElementNames()[i] for i in range(len(doc.Sheets.getElementNames()))]
+    return list(_document(path).Sheets.getElementNames())
 
 
 @mcp.tool()
@@ -544,6 +583,8 @@ def write_range(sheet: str, start_cell: str, values: list[list[Any]], path: str 
     width = max(len(row) for row in values)
     if width == 0:
         raise ValueError("values must contain at least one column")
+    if any(len(row) != width for row in values):
+        raise ValueError("all rows must have the same length")
 
     doc = _document(path)
     start_col, start_row = _cell_indexes(start_cell)
@@ -614,7 +655,7 @@ def set_internal_hyperlink(
     _cell_indexes(target_cell)
     source_sheet = _sheet(doc, sheet)
     target = source_sheet.getCellByPosition(col, row)
-    url = f"#{target_sheet}.{target_cell}"
+    url = _sheet_ref(target_sheet, target_cell)
     visible = label if label is not None else f"{target_sheet}!{target_cell}"
     target.Formula = f'=HYPERLINK("{_escape_formula_text(url)}";"{_escape_formula_text(visible)}")'
     target.CharColor = 0x00B0F0
@@ -866,7 +907,7 @@ def create_gpu_purchase_dashboard_live(
         ("Financial model", "Calcul"),
     ]
     for row, (label, target_sheet) in enumerate(navigation, 16):
-        cell_obj = _write_cell(sheet_obj, f"J{row}", f'=HYPERLINK("#{target_sheet}.A1";"{label}")')
+        cell_obj = _write_cell(sheet_obj, f"J{row}", f'=HYPERLINK("{_sheet_ref(target_sheet, "A1")}";"{label}")')
         cell_obj.CharColor = 0x00B0F0
         cell_obj.CharUnderline = 1
 
@@ -993,6 +1034,577 @@ def save_document(path: str | None = None) -> dict[str, str]:
     doc = _document(path)
     doc.store()
     return {"saved": _path_from_url(getattr(doc, "URL", ""))}
+
+
+@mcp.tool()
+def capture_sheet_png(
+    path: str | None = None,
+    sheet: str | None = None,
+    cell_range: str | None = None,
+    out_path: str | None = None,
+    dpi: int = 96,
+) -> dict[str, Any]:
+    """Render a Calc sheet (or a cell range) to a PNG so an agent can visually verify the result.
+
+    This exports the selected range to PDF through UNO (so it reflects the real cell
+    formatting, including background and font colours), then converts the first PDF page
+    to a PNG with pdftoppm. Returns the PNG path so the caller can read/inspect the image.
+
+    Use this to confirm what the sheet actually looks like (e.g. checking that a background
+    is black, not white) instead of relying on an OS window screenshot.
+    """
+    import tempfile
+
+    if out_path is None:
+        out_path = os.path.join(tempfile.gettempdir(), "calc_capture.png")
+
+    doc = _document(path)
+    sheet_obj = _sheet(doc, sheet) if sheet else doc.CurrentController.ActiveSheet
+    if cell_range:
+        target = sheet_obj.getCellRangeByName(cell_range)
+        range_label = cell_range
+    else:
+        cursor = sheet_obj.createCursor()
+        cursor.gotoEndOfUsedArea(False)
+        addr = cursor.RangeAddress
+        target = sheet_obj.getCellRangeByPosition(0, 0, addr.EndColumn, addr.EndRow)
+        range_label = f"A1:{_cell_name(addr.EndColumn, addr.EndRow)}"
+
+    controller = doc.CurrentController
+    controller.setActiveSheet(sheet_obj)
+    controller.select(target)
+
+    # Crop reliably by restricting the sheet print area to the target range,
+    # restoring the previous print areas afterwards.
+    previous_areas = sheet_obj.getPrintAreas()
+    sheet_obj.setPrintAreas((target.RangeAddress,))
+
+    pdf_fd, pdf_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(pdf_fd)
+    pdf_url = _file_url(pdf_path)
+    name_filter = _property("FilterName", "calc_pdf_Export")
+    try:
+        try:
+            doc.storeToURL(pdf_url, (name_filter,))
+        finally:
+            sheet_obj.setPrintAreas(previous_areas)
+
+        prefix_fd, prefix = tempfile.mkstemp()
+        os.close(prefix_fd)
+        try:
+            try:
+                subprocess.run(
+                    ["pdftoppm", "-png", "-r", str(dpi), "-f", "1", "-l", "1", pdf_path, prefix],
+                    check=True,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("pdftoppm not found - install poppler-utils") from exc
+            produced = None
+            for candidate in (f"{prefix}-1.png", f"{prefix}-01.png"):
+                if os.path.exists(candidate):
+                    produced = candidate
+                    break
+            if produced is None:
+                matches = glob.glob(f"{prefix}*.png")
+                produced = matches[0] if matches else None
+            if produced is None:
+                raise RuntimeError("pdftoppm did not produce a PNG")
+            os.replace(produced, out_path)
+        finally:
+            for leftover in glob.glob(f"{prefix}*.png"):
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
+            try:
+                os.remove(prefix)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.remove(pdf_path)
+        except OSError:
+            pass
+    return {"png": out_path, "sheet": sheet_obj.Name, "range": range_label, "dpi": dpi}
+
+
+# ---------------------------------------------------------------------------
+# New Pydantic models
+# ---------------------------------------------------------------------------
+
+
+class RangeReadResult(BaseModel):
+    document: str
+    sheet: str
+    range: str
+    rows: int
+    columns: int
+    values: list[list[Any]] = Field(description="2D grid of computed cell values, rows × columns")
+    formulas: list[list[str | None]] = Field(
+        description="2D grid parallel to values; formula string when the cell contains one, None otherwise"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_color(value: int | str) -> int:
+    """Convert an integer or hex string (e.g. ``"1F4E78"``, ``"#1F4E78"``) to a LibreOffice RGB integer."""
+    if isinstance(value, int):
+        return value
+    cleaned = value.strip().lstrip("#").lstrip("0x").lstrip("0X")
+    return int(cleaned, 16)
+
+
+def _apply_number_format(doc: Any, range_obj: Any, format_code: str) -> None:
+    """Apply a LibreOffice number-format code string to a cell range via ``doc.NumberFormats``."""
+    uno, _ = _import_uno()
+    locale = uno.createUnoStruct("com.sun.star.lang.Locale")
+    formats = doc.NumberFormats
+    key = formats.queryKey(format_code, locale, False)
+    if key == -1:
+        key = formats.addNew(format_code, locale)
+    range_obj.NumberFormat = key
+
+
+def _column_index(letter: str) -> int:
+    """Convert a column letter (e.g. ``"C"``) to a 0-based column index."""
+    return _cell_indexes(f"{letter}1")[0]
+
+
+# ---------------------------------------------------------------------------
+# New MCP tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def read_range(sheet: str, cell_range: str, path: str | None = None) -> RangeReadResult:
+    """Read a rectangular range of cells, returning both computed values and formulas.
+
+    Use this when you need the contents of a table or block of cells at once,
+    rather than calling ``read_cell`` repeatedly.  The ``values`` grid holds the
+    *computed* result of each cell (numbers for formulas, strings for text).
+    The ``formulas`` grid is parallel to ``values`` and contains the formula
+    string (including the leading ``=``) only when the cell is a formula;
+    otherwise the entry is ``None``.  This tool is read-only and does not save.
+
+    Example::
+
+        read_range(sheet="Calcul", cell_range="A1:C5")
+    """
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    start_col, start_row, end_col, end_row = _range_indexes(cell_range)
+    rows = end_row - start_row + 1
+    columns = end_col - start_col + 1
+    values: list[list[Any]] = []
+    formulas: list[list[str | None]] = []
+    for r in range(rows):
+        value_row: list[Any] = []
+        formula_row: list[str | None] = []
+        for c in range(columns):
+            cell_obj = target_sheet.getCellByPosition(start_col + c, start_row + r)
+            value_row.append(_read_cell_value(cell_obj))
+            formula = getattr(cell_obj, "Formula", "") or ""
+            formula_row.append(formula if formula.startswith("=") else None)
+        values.append(value_row)
+        formulas.append(formula_row)
+    return RangeReadResult(
+        document=_path_from_url(getattr(doc, "URL", "")),
+        sheet=sheet,
+        range=f"{_cell_name(start_col, start_row)}:{_cell_name(end_col, end_row)}",
+        rows=rows,
+        columns=columns,
+        values=values,
+        formulas=formulas,
+    )
+
+
+@mcp.tool()
+def get_used_range(sheet: str, path: str | None = None) -> dict[str, Any]:
+    """Return the used data range of a sheet (e.g. ``"A1:H42"``).
+
+    Creates a sheet cursor, moves it to the start and end of the used area,
+    and reports the resulting address, row count, and column count.  Useful
+    before bulk reads, formatting, or chart insertion when you do not know
+    the extent of the data ahead of time.  This tool is read-only.
+
+    Example::
+
+        get_used_range(sheet="Data")
+    """
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    cursor = target_sheet.createCursor()
+    cursor.gotoStartOfUsedArea(False)
+    start = cursor.RangeAddress
+    cursor.gotoEndOfUsedArea(True)
+    end = cursor.RangeAddress
+    start_col, start_row = start.StartColumn, start.StartRow
+    end_col, end_row = end.EndColumn, end.EndRow
+    rows = end_row - start_row + 1
+    columns = end_col - start_col + 1
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "range": f"{_cell_name(start_col, start_row)}:{_cell_name(end_col, end_row)}",
+        "rows": rows,
+        "columns": columns,
+    }
+
+
+@mcp.tool()
+def clear_range(
+    sheet: str,
+    cell_range: str,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Clear cell contents in a range, preserving formatting and styles.
+
+    Uses ``XSheetRange.clearContents`` with the combined flags for VALUE (1),
+    DATETIME (2), STRING (4), and FORMULA (16) — total **23** — so every data
+    type is removed while background colours, borders, and number formats are
+    kept intact.  When *save* is ``True`` (default) the workbook is stored
+    immediately.
+
+    Example::
+
+        clear_range(sheet="Temp", cell_range="A1:Z100")
+    """
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    start_col, start_row, end_col, end_row = _range_indexes(cell_range)
+    range_obj = target_sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
+    range_obj.clearContents(23)
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "cleared_range": f"{_cell_name(start_col, start_row)}:{_cell_name(end_col, end_row)}",
+    }
+
+
+@mcp.tool()
+def format_range(
+    sheet: str,
+    cell_range: str,
+    path: str | None = None,
+    bold: bool | None = None,
+    bg_color: int | str | None = None,
+    font_color: int | str | None = None,
+    font_name: str | None = None,
+    font_size: float | None = None,
+    number_format: str | None = None,
+    wrap: bool | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Apply formatting properties to a cell range.
+
+    Only properties explicitly provided (non-*None*) are changed; omitted
+    properties keep their current value.  Colours accept either an integer
+    (e.g. ``0x1F4E78``) or a hex string (e.g. ``"1F4E78"`` or ``"#1F4E78"``).
+    ``number_format`` is a LibreOffice format-code string applied through the
+    document's ``NumberFormats`` service (e.g. ``"0.00"`` or ``"#,##0 €"``).
+    When *save* is ``True`` (default) the workbook is stored immediately.
+
+    Example::
+
+        format_range(sheet="Report", cell_range="A1:D1", bold=True,
+                     bg_color="1F4E78", font_color="FFFFFF", font_size=14)
+    """
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    start_col, start_row, end_col, end_row = _range_indexes(cell_range)
+    range_obj = target_sheet.getCellRangeByPosition(start_col, start_row, end_col, end_row)
+    applied: list[str] = []
+    if bold is not None:
+        range_obj.CharWeight = 150.0 if bold else 100.0
+        applied.append("bold")
+    if bg_color is not None:
+        range_obj.CellBackColor = _parse_color(bg_color)
+        applied.append("bg_color")
+    if font_color is not None:
+        range_obj.CharColor = _parse_color(font_color)
+        applied.append("font_color")
+    if font_name is not None:
+        range_obj.CharFontName = font_name
+        applied.append("font_name")
+    if font_size is not None:
+        range_obj.CharHeight = font_size
+        applied.append("font_size")
+    if wrap is not None:
+        range_obj.IsTextWrapped = wrap
+        applied.append("wrap")
+    if number_format is not None:
+        _apply_number_format(doc, range_obj, number_format)
+        applied.append("number_format")
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "range": f"{_cell_name(start_col, start_row)}:{_cell_name(end_col, end_row)}",
+        "applied": applied,
+    }
+
+
+@mcp.tool()
+def insert_rows(
+    sheet: str,
+    row: int,
+    count: int = 1,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Insert blank rows before the given 1-based row number.
+
+    Uses ``sheet.Rows.insertByIndex`` so existing data below the insertion
+    point is shifted down.  When *save* is ``True`` (default) the workbook is
+    stored immediately.
+
+    Example::
+
+        insert_rows(sheet="Data", row=5, count=2)
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    target_sheet.Rows.insertByIndex(row - 1, count)
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "action": "insert_rows",
+        "row": row,
+        "count": count,
+    }
+
+
+@mcp.tool()
+def delete_rows(
+    sheet: str,
+    row: int,
+    count: int = 1,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Delete *count* rows starting at the given 1-based row number.
+
+    Uses ``sheet.Rows.removeByIndex`` so data below the deleted region is
+    shifted up.  When *save* is ``True`` (default) the workbook is stored
+    immediately.
+
+    Example::
+
+        delete_rows(sheet="Data", row=3, count=5)
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    target_sheet.Rows.removeByIndex(row - 1, count)
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "action": "delete_rows",
+        "row": row,
+        "count": count,
+    }
+
+
+@mcp.tool()
+def insert_columns(
+    sheet: str,
+    column: str,
+    count: int = 1,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Insert blank columns before the given column letter (e.g. ``"C"``).
+
+    Uses ``sheet.Columns.insertByIndex`` so existing data to the right of the
+    insertion point is shifted right.  When *save* is ``True`` (default) the
+    workbook is stored immediately.
+
+    Example::
+
+        insert_columns(sheet="Data", column="B", count=1)
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    col = _column_index(column)
+    target_sheet.Columns.insertByIndex(col, count)
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "action": "insert_columns",
+        "column": column,
+        "count": count,
+    }
+
+
+@mcp.tool()
+def delete_columns(
+    sheet: str,
+    column: str,
+    count: int = 1,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Delete *count* columns starting at the given column letter (e.g. ``"D"``).
+
+    Uses ``sheet.Columns.removeByIndex`` so data to the right of the deleted
+    region is shifted left.  When *save* is ``True`` (default) the workbook is
+    stored immediately.
+
+    Example::
+
+        delete_columns(sheet="Data", column="F", count=3)
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    col = _column_index(column)
+    target_sheet.Columns.removeByIndex(col, count)
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "action": "delete_columns",
+        "column": column,
+        "count": count,
+    }
+
+
+@mcp.tool()
+def find_replace(
+    sheet: str,
+    find: str,
+    replace: str | None = None,
+    match_case: bool = False,
+    regex: bool = False,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Search or search-and-replace within a sheet.
+
+    When *replace* is ``None`` (search-only mode) the tool uses
+    ``createSearchDescriptor`` + ``findAll`` and returns the list of matched
+    cell addresses (via ``cell.AbsoluteName``).  When *replace* is provided the
+    tool uses ``createReplaceDescriptor`` + ``replaceAll`` and returns the
+    number of replacements made.
+
+    *match_case* toggles case sensitivity; *regex* enables regular-expression
+    matching.  When *save* is ``True`` (default) the workbook is stored
+    immediately (relevant only when replacing).
+
+    Example::
+
+        find_replace(sheet="Data", find="Q[1-4]", regex=True)
+        find_replace(sheet="Data", find="old", replace="new")
+    """
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    if replace is None:
+        descriptor = target_sheet.createSearchDescriptor()
+        descriptor.SearchString = find
+        descriptor.SearchCaseSensitive = match_case
+        descriptor.SearchRegularExpression = regex
+        found = target_sheet.findAll(descriptor)
+        matches: list[str] = []
+        if found is not None:
+            for i in range(found.Count):
+                matches.append(found.getByIndex(i).AbsoluteName)
+        return {
+            "document": _path_from_url(getattr(doc, "URL", "")),
+            "sheet": sheet,
+            "mode": "find",
+            "matches": matches,
+            "count": len(matches),
+        }
+    descriptor = target_sheet.createReplaceDescriptor()
+    descriptor.SearchString = find
+    descriptor.ReplaceString = replace
+    descriptor.SearchCaseSensitive = match_case
+    descriptor.SearchRegularExpression = regex
+    count = target_sheet.replaceAll(descriptor)
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "mode": "replace",
+        "replacements": count,
+    }
+
+
+@mcp.tool()
+def insert_chart(
+    sheet: str,
+    name: str,
+    data_range: str,
+    chart_type: str = "bar",
+    title: str | None = None,
+    x: int = 1000,
+    y: int = 1000,
+    width: int = 16000,
+    height: int = 9000,
+    path: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Insert a native LibreOffice chart into a sheet.
+
+    Wraps the internal ``_add_sheet_chart`` helper.  *data_range* is an
+    ``"A1:C5"``-style string that is converted to zero-based column/row indexes
+    internally.  Supported *chart_type* values are ``"bar"``, ``"line"``, and
+    ``"pie"``.  Position and size (x, y, width, height) are in LibreOffice's
+    internal units (1/100 mm).  When *save* is ``True`` (default) the workbook
+    is stored immediately.
+
+    Example::
+
+        insert_chart(sheet="Report", name="SalesChart", data_range="A1:B6",
+                     chart_type="pie", title="Revenue by Quarter")
+    """
+    doc = _document(path)
+    target_sheet = _sheet(doc, sheet)
+    dr = _range_indexes(data_range)
+    chart_name = _add_sheet_chart(
+        target_sheet,
+        name=name,
+        data_range=dr,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        chart_type=chart_type,
+        title=title,
+    )
+    if chart_name is None:
+        raise RuntimeError(f"Failed to insert chart '{name}' into sheet '{sheet}'")
+    if save:
+        doc.store()
+    return {
+        "document": _path_from_url(getattr(doc, "URL", "")),
+        "sheet": sheet,
+        "chart": chart_name,
+        "chart_type": chart_type,
+        "data_range": data_range,
+    }
 
 
 def main() -> None:
